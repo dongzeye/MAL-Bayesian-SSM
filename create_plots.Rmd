@@ -1,0 +1,600 @@
+---
+title: "Plots for Bayesian SSM of MAL"
+output:
+  html_document: 
+    theme: paper
+    highlight: pygments
+---
+```{r setup, message=FALSE, warning=FALSE, include=FALSE}
+library(rstan)
+library(loo)
+library(MCMCvis)
+library(dplyr)
+library(readxl)
+library(tidyr)
+library(ggmcmc)
+library(ggpubr)
+library(grid)
+library(reshape)
+library(viridis)
+library(Metrics)
+
+options(mc.cores = 4)
+rstan_options(auto_write = FALSE)
+
+source('setup.R', local = knitr::knit_global())
+
+model_name_D = "???"
+model_name_E = "???" 
+
+result_dir_D = paste0('model_results/DOSE/', model_name_D, '/')
+result_dir_E = paste0('model_results/EXCITE/', model_name_E, '/')
+
+mcmc_D = As.mcmc.list(model_D)
+mcmc_E = As.mcmc.list(model_E)
+
+N_TIME_DOSE = 40
+N_TIME_EXITE = 95
+```
+
+```{r readRDS}
+model_D = readRDS(paste0('saved/DOSE/', model_name_D, '.rds'))
+model_E = readRDS(paste0("???.rds"))
+```
+
+# Extract Posteriors
+```{r}
+
+
+pars_of_interest = c(paste0('mu_', c('alpha', 'beta', 'gamma')), 
+                     paste0('sd_', c('alpha', 'beta', 'gamma')),
+                     c('alpha', 'beta', 'gamma'))
+
+post_summary_D = summary(model_D, pars=pars_of_interest)$summary
+write.csv(post_summary_D, "./posteriors_summary_DOSE.csv")
+
+post_summary_E = summary(model_E, pars = pars_of_interest)$summary
+write.csv(post_summary_E, "./posteriors_summary_EXCITE.csv")
+
+alpha = post_summary_D[paste0('alpha[', 1:N_TIME_DOSE, ']'), "50%"]
+Talpha = 1/(1 + exp(-alpha))
+time_const_D = data.frame(Dose = 1/(1-Talpha))
+
+alpha = post_summary_E[paste0('alpha[', 1:N_TIME_EXITE, ']'), "50%"]
+Talpha = 1/(1 + exp(-alpha))
+time_const_E = data.frame(Excite = 1/(1-Talpha))
+
+summary(Talpha)
+summary(time_const_E)
+```
+
+```{r}
+alpha = post_summary_E[paste0('alpha[', 1:95, ']'), c("2.5%", "97.5")]
+Talpha = 1/(1 + exp(-alpha))
+time_const_E = data.frame(Excite = 1/(1-Talpha))
+```
+
+
+# get RMSEs (by subject)
+```{r}
+df_D = read.csv(paste0(result_dir_D, 'MAL_fits.csv'))
+df_E = read.csv(paste0(result_dir_E, 'MAL_fits.csv'))
+
+df_rmse = data.frame(
+  dataset = character(),
+  subject = integer(),
+  rmse = double()
+)
+
+global_rmse = data.frame(
+  dataset = character(),
+  group = character(),
+  rmse = double()
+)
+global_rmse = rbind(
+  global_rmse,
+  c(dataset='DOSE', group='all', rmse=rmse(df_D$MAL_obs, df_D$MAL_fitted)),
+  c(dataset='EXCITE', group='all', rmse=rmse(df_E$MAL_obs, df_E$MAL_fitted)),
+  c(dataset='EXCITE', group='Delayed', rmse=rmse(df_E$MAL_obs[1:45], df_E$MAL_fitted[1:45])),
+  c(dataset='EXCITE', group='Immediate', rmse=rmse(df_E$MAL_obs[46:95], df_E$MAL_fitted[46:95]))
+)
+
+name = 'DOSE'
+df_tmp = df_D
+for (i in 1:40) {
+  cur = subset(df_tmp, id == i)
+  df_rmse = df_rmse %>% 
+    rbind(c(dataset = name, subject = i, rmse = rmse(cur$MAL_obs, cur$MAL_fitted)))
+}
+
+name = 'EXCITE'
+df_tmp = df_E
+for (i in c(45:95, 1:45)) {
+  cur = subset(df_tmp, id == i)
+  df_rmse = df_rmse %>% 
+    rbind(c(dataset = name, subject = i, rmse = rmse(cur$MAL_obs, cur$MAL_fitted)))
+}
+
+RMSE_by_subj = data.frame(
+  model = c("DOSE", "EXCITE", "EXCITE", "EXCITE"),
+  group = c("all", "all", "Delayed", "Immediate"),
+  meanRMSE = c(
+    mean(subset(df_rmse, dataset == 'DOSE')$rmse),
+    mean(subset(df_rmse, dataset == 'EXCITE')$rmse),
+    mean(subset(df_rmse, dataset == 'EXCITE')$rmse[1:45]),
+    mean(subset(df_rmse, dataset == 'EXCITE')$rmse[46:95])
+  ),
+  sd = c(
+    sd(subset(df_rmse, dataset == 'DOSE')$rmse),
+    sd(subset(df_rmse, dataset == 'EXCITE')$rmse),
+    sd(subset(df_rmse, dataset == 'EXCITE')$rmse[1:45]),
+    sd(subset(df_rmse, dataset == 'EXCITE')$rmse[46:95])
+  )
+)
+  
+```
+
+# Plots
+```{r}
+df_comp = read.csv(paste0(result_dir_E, 'MAL_fits.csv'))
+
+df_plot = rbind(subset(df_comp, condition=='Immediate'), subset(df_comp, condition=='Delayed'))
+df_plot$weeks = df_plot$weeks-1
+
+subs_D = c(2, 6, 12, 17, 23, 27, 33, 37)
+subs_E = c(47, 53, 57, 58, 1, 13, 23, 29)
+# subs_E = c(subset(df_plot, condition=='Immediate' & Time == 1)$id,
+#             subset(df_plot, condition=='Delayed' & Time == 1)$id)
+
+# subs_E = c(subset(df_plot, condition=='Immediate' & Time == 1)$id[c(2, 5, 12, 13)],
+#            subset(df_plot, condition=='Delayed' & Time == 1)$id[c(1, 13, 23, 29)])
+
+intvl1 = c(0.025, 0.975)
+intvl2 = c(0.005, 0.995)
+intvl1_width = 0.15
+intvl2_width = 0.5
+
+font_settings = theme_classic() + 
+  theme(axis.text.x = element_text(size = 13),
+        axis.text.y = element_text(size = 13),
+        axis.title = element_text(size = 13),
+        plot.title = element_blank())
+
+par_colors = viridis(8)[c(1, 3, 5)]
+names(par_colors) = c('alpha', 'beta', 'gamma')
+
+par_titles = list(
+  "alpha" = "Retention rate",
+  "beta" ="Learning rate",
+  "gamma" = "Self-training rate"
+)
+
+```
+
+
+## Individual Parameters
+```{r Individual Parameters}
+ci_indiv = data.frame()
+
+for (par in c('alpha', 'beta', 'gamma')){
+  ci_par = ci(ggs(mcmc_D, family = paste0("^", par)), thick_ci = intvl1, thin_ci = intvl2)[subs_D, ]
+  ci_par$par = par
+  ci_par$model = 'DOSE'
+  ci_indiv = rbind(ci_indiv, ci_par)
+  
+  ci_par = ci(ggs(mcmc_E, family = paste0("^", par)), thick_ci = intvl1, thin_ci = intvl2)[subs_E, ]
+  ci_par$par = par
+  ci_par$model = 'EXCITE'
+  ci_indiv = rbind(ci_indiv, ci_par)
+}
+
+ci_indiv$color = unlist(par_colors[ci_indiv$par])
+ci_indiv$sid = rep(c(subs_D, subs_E), 3)
+```
+
+
+
+## Predicted MALs (Figure 1.A)
+```{r DOSE MALfit Plot}
+df_plot = read.csv(paste0(result_dir_D, 'MAL_fits.csv'))
+ps = list()
+
+colmap = viridis(9)[c(2, 4, 6, 8)]
+colors = function(subj_id){
+  return(colmap[ceiling(subj_id/10)])
+}
+
+drect=data.frame(x1=c(3,8,13), x2=c(4,9,14), y1=c(0,0,0), y2=c(5, 5, 5), training=c('1','2','3'), r=c(1,2,3))
+for (i in subs_D){
+  tmp = subset(df_plot, id==i)
+  color = colors(i)
+  fits_tmp = ggplot(data=tmp) +
+    # here add training weeks bars
+    geom_rect(data=drect, aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2, group=r), 
+              fill='azure3', alpha=c(0.3, 0.6, 0.9), show.legend = FALSE) +
+    geom_ribbon(aes(x=week, ymin=MALp2.5, ymax=MALp97.5), fill='gray', alpha=0.4) +
+    geom_line(aes(x=week, y=MAL_fitted), size=1.5, alpha=0.9, color=color) +
+    geom_point(aes(x=week, y=MAL_obs), size=1.2, color=color) +
+    theme_classic() + 
+    scale_y_continuous(breaks=seq(0, 5, 1), labels = c('', '1', '', '3', '', '5'), limits = c(0, 5), 
+                       name= ifelse(i %in% subs_D[c(1,5)], "MAL", "")) +
+    scale_x_continuous(breaks= c(0, 3, 8, 13, 22, 34), labels=c('', 3, 8, 13, 22, 34), name = "Weeks", limits=c(0, 38)) +
+    font_settings +
+    annotate(geom='text', x = 4, y= 4.8, label= paste0("D", i), parse = FALSE, fontface="bold", size=5)
+  
+  tmp = subset(ci_indiv, model == 'DOSE' & sid == i) 
+  pars_tmp = ggplot(tmp, aes(x=par, ymin=low, ymax=high, lower = Low, middle=median, upper=High, group=par))+
+    geom_boxplot(stat='identity', width = intvl1_width, lwd=intvl2_width, color=tmp$color, fill=tmp$color) +
+    guides(fill='none', color = 'none') +
+    coord_flip() +
+    scale_x_discrete(labels=parse(text=tmp$par), name=ifelse(i %in% subs_D[c(1,5)], "param.", "")) +
+    scale_y_continuous(breaks=seq(0, 1, 0.2), limits = c(0, 1),  name="") + 
+    font_settings +
+    theme(panel.grid.major.x = element_line(color = "gray",
+                                          size = 0.5,
+                                          linetype = 2))
+  
+  ps[[as.character(i)]] = ggarrange(fits_tmp, pars_tmp, nrow=2,align='v', heights = c(1, 0.6))
+}
+
+# generate the dose legend
+p1 = ggplot(data=df_plot) +
+  # here add training weeks bars
+  geom_line(aes(x=week, y=MAL_fitted, color=factor(dose)), size = 1.5, alpha = 0.8) +
+  guides(color=guide_legend("Dose")) +
+  scale_color_manual(labels=c('0', '15', '30', '60'), values=colmap) + 
+  theme(text = element_text(size = 17), strip.text = element_blank(),
+        legend.position="top")
+
+dose_legend = get_legend(p1, 'right')
+
+Ncol = 4
+Nrow = ceiling(length(subs_D)/Ncol)
+p1_new = ggarrange(plotlist = ps, nrow = Nrow, ncol = Ncol, 
+                   common.legend = TRUE, legend='right', legend.grob = dose_legend)
+
+fig_1a = p1_new + theme(plot.margin = margin(1, 1, 1, 1, "cm"))
+# fig_1a = annotate_figure(p1_new, left = textGrob("MAL", rot = 90, vjust = 1, gp = gpar(cex = 1.7)),
+#                          bottom = textGrob("Time (weeks)", gp = gpar(cex = 1.7)),
+#                          top = " ", 
+#                          # fig.lab = "A: Model fit to DOSE data, arranged by weekly dose of training",
+#                          # fig.lab.pos='top.left', 
+#                          fig.lab.size=20) +
+#   theme(plot.margin = margin(1, 1, 1, 1, "cm"))
+
+print(fig_1a)
+
+pdf('plots/Fig1a.pdf', width = 3*Ncol, height = 4*Nrow)
+print(fig_1a)
+dev.off()
+```
+
+```{r EXCITE MALfit Plot}
+subs_E = c(47, 53, 57, 58, 1, 13, 23, 29)
+
+
+df_comp = read.csv(paste0(result_dir_E, 'MAL_fits.csv'))
+
+df_plot = rbind(subset(df_comp, condition=='Immediate'), subset(df_comp, condition=='Delayed'))
+df_plot$weeks = df_plot$weeks-1
+
+ps = list()
+
+colmap = viridis(9)[c(8, 2)]
+colors = function(condition){
+  return(colmap[as.numeric(condition)])
+}
+
+
+for (i in subs_E){
+  tmp = subset(df_plot, id==i)
+  color = colors(tmp$condition_num_2[1])
+  
+  if (tmp$condition[1]=='Delayed') {
+    drect=data.frame(x1=c(48), x2=c(50), y1=c(0), y2=c(5), training=c('1'), r=c(1))  
+  } else {
+    drect=data.frame(x1=c(0), x2=c(2), y1=c(0), y2=c(5), training=c('1'), r=c(1))
+  }
+  
+  fits_tmp = ggplot(data=tmp) +
+    geom_rect(data=drect, aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), 
+            fill='azure3', alpha=c(0.6), show.legend = FALSE) +
+    # geom_vline(xintercept=ifelse(tmp$condition[1]=='Delayed', 25, 1), color="gray", size=1.5, alpha=0.5) + 
+    geom_ribbon(aes(x=weeks, ymin=MALp2.5, ymax=MALp97.5), fill='gray', alpha=0.4) +
+    geom_line(aes(x=weeks, y=MAL_fitted), size=1.5, alpha=0.9, color=color) +
+    geom_point(aes(x=weeks, y=MAL_obs), size=1.2, color=color) +
+    scale_y_continuous(breaks=seq(0, 5, 1), labels = c('', '1', '', '3', '', '5'), limits = c(0, 5), name=ifelse(i %in% subs_E[c(1,5)], "MAL", "")) +
+    scale_x_continuous(breaks= c(0, 2, 16, 32, 48, 50, 64, 80, 96), 
+                       labels=c(0, '', 16, 32, 48, '', 64, 80, 96), 
+                       limits = c(0, 98), name = "Weeks") +
+    font_settings +
+    annotate(geom='text', x = 8, y= 4.8, label= paste0("E", i), parse = FALSE, fontface="bold", size=5)
+
+  
+  tmp = subset(ci_indiv, model == 'EXCITE' & sid == i) 
+  pars_tmp = ggplot(tmp, aes(x=par, ymin=low, ymax=high, lower = Low, middle=median, upper=High, group=par))+
+    geom_boxplot(stat='identity', width = intvl1_width, lwd=intvl2_width, color=tmp$color, fill=tmp$color) +
+    guides(fill='none', color = 'none') +
+    coord_flip() +
+    scale_x_discrete(labels=parse(text=tmp$par), name=ifelse(i %in% subs_E[c(1,5)], "param.", "")) +
+    scale_y_continuous(breaks=seq(0, 1, 0.2), limits = c(0, 1), name="") + 
+    font_settings +
+    theme(panel.grid.major.x = element_line(color = "gray",
+                                          size = 0.5,
+                                          linetype = 2))
+  
+  ps[[as.character(i)]] = ggarrange(fits_tmp, pars_tmp, nrow=2,align='v', heights = c(1, 0.6))
+    
+}
+
+
+p1 = ggplot(data=df_plot) +
+  # here add training weeks bars
+  geom_line(aes(x=weeks, y=MAL_obs, color=condition), size = 1.2) + 
+  guides(color=guide_legend("Condition")) +
+  scale_color_manual(values=colmap, labels = c('Immediate', 'Delayed')) +
+  theme(text = element_text(size = 17), strip.text = element_blank())
+
+excite_legend = get_legend(p1, 'right')
+Ncol = 4
+Nrow = ceiling(length(subs_E)/Ncol)
+p1_new = ggarrange(plotlist = ps, nrow = Nrow, ncol = Ncol, 
+                   common.legend=TRUE, legend='right', legend.grob=get_legend(p1, 'right'))
+
+fig_1b = p1_new + theme(plot.margin = margin(1, 1, 1, 1, "cm"))
+# fig_1b = annotate_figure(p1_new, 
+#                          left = textGrob("MAL", rot = 90, vjust = 1, gp = gpar(cex = 1.7)),
+#                          bottom = textGrob("Time (2 weeks)", gp = gpar(cex = 1.7))) +
+    
+
+print(fig_1b)
+
+pdf('plots/Fig1b.pdf', width = 3*Ncol, height = 4*Nrow)
+print(fig_1b)
+dev.off()
+```
+
+## Population parameters
+```{r}
+ggs_D = ggs(mcmc_D, family = "mu_alpha|mu_beta|mu_gamma")
+ggs_E = ggs(mcmc_E, family = "mu_alpha|mu_beta|mu_gamma")
+
+ggs_D$value = ifelse(
+  ggs_D$Parameter == 'mu_alpha',
+  1/ (1+exp(-ggs_D$value)),
+  ggs_D$value)
+
+ggs_E$value = ifelse(
+  ggs_E$Parameter == 'mu_alpha',
+  1/ (1+exp(-ggs_E$value)),
+  ggs_E$value)
+
+ci.pop_D <- ci(ggs_D, thick_ci = intvl1, thin_ci = intvl2)
+ci.pop_E <- ci(ggs_E, thick_ci = intvl1, thin_ci = intvl2)
+
+ci.pop_D$Parameter = ordered( ci.pop_D$Parameter, levels = c("mu_alpha", "mu_beta", "mu_gamma"))
+ci.pop_D$model = 'DOSE'
+ci.pop_E$Parameter = ordered( ci.pop_E$Parameter, levels = c("mu_alpha", "mu_beta", "mu_gamma"))
+ci.pop_E$model = 'EXCITE'
+ci.pop = rbind(ci.pop_D, ci.pop_E)
+
+pop <- ggplot(ci.pop, aes(x=Parameter, ymin=low, ymax=high, lower = Low, middle=median, upper=High))+
+  geom_boxplot(aes(group = interaction(Parameter, model)), stat='identity', 
+               width = intvl1_width, lwd=intvl2_width, fill = rep(par_colors, 2), 
+               color = rep(par_colors, 2), position = position_dodge(width=0.5)) +
+  facet_wrap(~model, nrow = 2) +
+  guides(fill='none')+
+  coord_flip() +
+  scale_x_discrete(labels= c(expression(T(theta[alpha])), expression(theta[beta]), expression(theta[gamma]))) +
+  scale_y_continuous(breaks=seq(0, 2, 0.2)) + 
+  labs(x = "Hyper-Parameters", y = "Posterior Credible Intervals") +
+  font_settings +
+  theme(panel.grid.major.x = element_line(color = "gray",
+                                          size = 0.5,
+                                          linetype = 2))
+
+Fig1c = pop + theme(plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"))
+# annotate_figure(pop, left = textGrob("Hyper-Parameters", rot = 90, vjust = 1, gp = gpar(cex=1.5)),
+#                            bottom = textGrob("Posterior Credible Intervals", gp = gpar(cex=1.5))) 
+print(Fig1c)
+
+pdf('plots/Fig1c.pdf', width = 7, height = 4)
+print(Fig1c)
+dev.off()
+```
+
+## LOSO plots
+```{r}
+col_titles = list(
+  '14' = "Initial MAL only",
+  '11' = "Pre-Training: 1st", # "Before 1st Training",
+  '9' = "Pre-Training: 2nd", # "Before 2nd Training",
+  '7' = "Pre-Training: 3rd", # "Before 3rd Training",
+  '5' = "Post-Training: 1 mon."
+)
+
+colmap = viridis(9)[c(2, 4, 6, 8)]
+colors = function(id, hue_plate = gg_color_hue(4)){
+  return(colmap[ceiling(id/10)])
+}
+
+# training indicators
+ylim_hi = 5.2
+drect=data.frame(x1=c(2,7,12)+1, x2=c(3,8,13)+1, y1=c(0,0,0), y2=c(5.2, 5.2, 5.2), training=c('1','2','3'), r=c(1,2,3))
+subj_lst = c(2, 11, 25, 33) # subs_D[c(1, 3, 5, 7)]
+
+plot_SLO = function(id_SLO, T_SLO, mod_prefix, date_='') {
+  
+  fullname = paste0(mod_prefix,"_", 'S', id_SLO, '_rm', T_SLO)
+  df_SLO = read.csv(paste0('model_results/LOSO/', fullname, "/MAL_forecasts.csv"))
+
+  weeks_rm = tail(weeks_data, T_SLO)
+  df_SLO$shape = c(rep('circle', 14-T_SLO), rep('triangle open', T_SLO))
+  df_SLO[(df_SLO$NA_ == 1), 'MAL_obs'] = NA_real_
+  df_SLO[!(df_SLO$week %in% weeks_rm), c('MAL_fitted', 'MALp5', 'MALp95', 'MALp2.5', 'MALp97.5')] = NA_real_
+  
+  p = ggplot(df_SLO, aes(x=week)) +
+    geom_rect(data=drect, inherit.aes=FALSE, aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), 
+              fill='azure3', alpha=c(0.3, 0.6, 0.9), show.legend = FALSE) +
+    geom_ribbon(aes(ymin = MALp0.5 , ymax = MALp99.5), fill = "#08519C15") +
+    geom_ribbon(aes(ymin = MALp2.5 , ymax = MALp97.5), fill = "#08519C25") +
+    geom_line(aes(x=week, y=MAL_fitted), size = 1.5, linetype = "dashed", color = "#08519C40") +
+    geom_point(aes(x=week, y=MAL_obs), size = 3, color = colors(id_SLO), shape=df_SLO$shape) +
+    theme_classic() +
+    {if(id_SLO == subj_lst[1]) ggtitle( col_titles[[as.character(T_SLO)]] )} +
+    scale_x_continuous(breaks= c(3, 8, 13, 22, 34), name = "Weeks") +
+    scale_y_continuous(breaks = 0:5, labels=c('', '1', '', '3', '', '5')) +
+    theme(text = element_text( size = 18),
+          plot.title = element_text(size = 16, hjust = 0.5, face = 'bold', margin=margin(0,0,0,0)),
+          axis.text.y = element_text(size = 17),
+          axis.text.x = element_text(size = 16),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank()) +
+    {if (T_SLO == 11) 
+      annotate(geom='text', x = 4, y= 4.8, label= paste0("D", id_SLO), parse = FALSE, fontface="bold", size=6)
+    }
+    return(p)
+}
+
+```
+
+```{r}
+LOSO_plts = list()
+for (id_SLO in subj_lst) {
+  for (T_SLO in c(11, 9, 7, 5)) {
+    LOSO_plts[[paste0('S', id_SLO, '_rm', T_SLO)]] = plot_SLO(id_SLO, T_SLO, 'CARC_bestMod')
+  }
+}
+
+full_plot2a = ggarrange(plotlist=LOSO_plts, ncol = 4, nrow = length(subj_lst), legend.grob= dose_legend,
+                        align='v', common.legend = TRUE, legend='right')
+
+figure2a = annotate_figure(full_plot2a, left = textGrob("MAL", rot = 90, vjust = 1, gp = gpar(cex = 1.5)),
+                    bottom = textGrob("Weeks", gp = gpar(cex = 1.5)),
+                    top = textGrob("\n ", gp = gpar(cex = 1)))
+
+pdf(paste0('plots/Fig2a.pdf'), width = 14.5, height = 2*length(subj_lst))
+print(figure2a) 
+dev.off()
+```
+
+```{r}
+LOSO_plts = list()
+
+for (id_SLO in subj_lst) {
+  for (T_SLO in c(11, 9, 7, 5)) {
+    LOSO_plts[[paste0('S', id_SLO, '_rm', T_SLO)]] = plot_SLO(id_SLO, T_SLO, 'CARC_bestMod_REOnly')
+  }
+}
+
+full_plot2b = ggarrange(plotlist=LOSO_plts, ncol = 4, nrow = length(subj_lst), 
+                        align='v', common.legend = TRUE, legend='right', legend.grob= dose_legend)
+
+figure2b = annotate_figure(full_plot2b, left = textGrob("MAL", rot = 90, vjust = 1, gp = gpar(cex = 1.5)),
+                    bottom = textGrob("Weeks", gp = gpar(cex = 1.5)),
+                    top = textGrob("\n ", gp = gpar(cex = 1)))
+
+pdf(paste0("./plots/Fig2b.pdf"), width = 14.5, height = 2 *length(subj_lst))
+print(figure2b) 
+dev.off()
+```
+
+## Bayesian RMSEs
+```{r}
+df_p = read.csv('model_results/meanRMSE_analysis.csv')
+
+avg_size = 18
+weeks_map = c(0, 1, 2, 3, 7, 8, 12, 13, 17, 21, 25, 29, 33, 37)+1
+pred_visits = 14-df_p$steps_ahead + df_p$prediction
+df = df_p
+df$weeks = as.numeric(lapply(pred_visits, function(x){weeks_map[x]}))
+df = melt.data.frame(df, id.vars=c('steps_ahead', 'prediction', 'weeks'), measure.vars=c('meanRMSE_Full', 'meanRMSE_RE'))
+df$steps_ahead = factor(df$steps_ahead, levels=c(11, 9, 7, 5))
+
+weeks_lab = c( 3, 8, 13, 22, 34)
+
+drect=data.frame(x1=c(2,7,12)+1, x2=c(3,8,13)+1, y1=c(0,0,0), y2=c(1.8, 1.8, 1.8), training=c('1','2','3'), r=c(1,2,3))
+p_rmse = ggplot(df, aes(x = weeks, y = value, group=steps_ahead)) +
+  geom_rect(data=drect, inherit.aes = FALSE, aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), 
+            fill='azure3', alpha=c(0.3, 0.6, 0.9),  show.legend = FALSE) +
+  geom_point(aes(color=steps_ahead, shape=variable), size=6, alpha=1) + 
+  scale_colour_viridis_d(option='mako', begin=0.3, end=0.9, direction=-1, 
+                         labels=c("11"="Pre1", "9"="Pre2", "7"= "Pre3", "5" = "Post1"), name="") +
+  scale_shape(name='Model Type', labels=c("meanRMSE_Full"="Hierachical", "meanRMSE_RE"="Non-hierachical")) + 
+  geom_smooth(aes(group=interaction(variable, steps_ahead), color=steps_ahead, linetype=variable),
+              show.legend=c(linetype=FALSE), method = 'lm', formula=y~log(x), se=FALSE, size = 2, alpha=0.6) +
+  scale_linetype_manual(values=c('meanRMSE_Full'='solid', 'meanRMSE_RE'='dotted')) +
+  scale_x_continuous(breaks= weeks_lab, labels=c("3","8","13", "22", "34"), name = "Weeks") +
+  ylab("mean BF-RMSE") +
+  scale_y_continuous(breaks = seq(0, 1.5, by = 0.5), limits = c(0, 1.8)) +
+  xlab("Target Week") +
+  theme_classic() +
+  theme(text = element_text(size = 20)) +
+  theme(legend.title = element_text(size = 18, face='italic')) +
+  theme(legend.text = element_text(size = 18)) +
+  ggtitle("  C: Bayesian Forecasting RMSE") +
+  theme(plot.title = element_text(size = 20))
+p_rmse
+```
+
+```{r}
+avg_size = 18
+weeks_map = c(0, 1, 2, 3, 7, 8, 12, 13, 17, 21, 25, 29, 33, 37)+1
+pred_visits = 14-df_p$steps_ahead + df_p$prediction
+df = df_p
+df$weeks = as.numeric(lapply(pred_visits, function(x){weeks_map[x]}))
+df$steps_ahead = factor(df$steps_ahead, levels=c(11, 9, 7, 5))
+
+weeks_lab = c( 3, 8, 13, 22, 34)
+
+drect=data.frame(x1=c(2,7,12)+1, x2=c(3,8,13)+1, y1=c(0,0,0), y2=c(0.5, 0.5, 0.5), 
+                 training=c('1','2','3'), r=c(1,2,3))
+p_pvals = ggplot(df, aes(x = weeks, y = p, group=steps_ahead)) +
+  geom_rect(data=drect, inherit.aes = FALSE, aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), 
+            fill='gray', alpha=c(0.3, 0.6, 0.9),   show.legend = FALSE) +
+  geom_hline(yintercept = 0.05, size = 1, linetype=2) +
+  geom_point(aes(color=steps_ahead), size=6, alpha=1) + 
+  scale_colour_viridis_d(option='mako', begin=0.3, end=0.9, direction=-1, 
+                         labels=c("11"="Pre1", "9"="Pre2", "7"= "Pre3", "5" = "Post1"), name="") +
+  geom_line(aes(color=steps_ahead), show.legend=c(linetype=FALSE), size = 2) +
+  scale_linetype_manual(values=c('meanRMSE_Full'='solid', 'meanRMSE_RE'='dotted')) +
+  scale_x_continuous(breaks= weeks_lab, labels=c("3","8","13", "22", "34"), name = "Weeks") +
+  annotate("text", x=4, y=0.08, label="0.05", color = "black", size = 5.5) +
+  ylab("p-value") +
+  xlab("Target Week") +
+  theme_classic() +
+  theme(text = element_text(size = 20)) + 
+  ggtitle("  D: p-values (one-sided)") +
+  theme(plot.title = element_text(size = 20))
+
+# print(p_pvals)
+# pdf('./plots/pvalues_RMSE.pdf', width=13, height=9)
+# print(p_pvals)
+# dev.off()
+```
+
+```{r}
+fig2_cd = ggarrange(
+  NULL, p_rmse, NULL, p_pvals, NULL, 
+  ncol=5, widths=c(0.1, 1, 0.1, 1, 0.1), common.legend = T, legend='bottom')
+
+pdf(paste0("./plots/LOSO_RMSE.pdf"), width = 14.5, height = 6.5)
+print(fig2_cd) 
+dev.off()
+```
+
+```{r}
+figure2_tmp = ggarrange(
+  figure2a, figure2b, nrow=2, 
+  labels=c("A: Long-term forecasting for selected subjects for (full) hierachical model",
+           "B: Long-term forecasting for selected subjects for random effect model"), 
+  hjust=-0.08, font.label=list(size = 18, face='plain'))
+figure2 = ggarrange(figure2_tmp, fig2_cd, nrow=2, heights=c(1, 0.25))
+  
+pdf(paste0("./plots/Fig2.pdf"), width = 12, height = 18)
+print(figure2) 
+dev.off()
+```
+
+
+

@@ -1,0 +1,209 @@
+---
+title: "Residual Analysis (for DOSE dataset)"
+output:
+  html_document: 
+    theme: paper
+    highlight: pygments
+---
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+library(coda)
+library(MCMCvis)
+library(rstan)
+library(tidybayes)
+library(bayesplot)
+library(ggpubr)
+library(ggmcmc)
+library(loo)
+library(reshape)
+library(matrixStats)
+options(mc.cores = parallelly::availableCores())
+
+result_dir = paste0('???')
+proj_dir = "???"
+
+model_name = "???"
+```
+
+```{r}
+### Omitting data preparation steps
+### Currently, the clinical data used in our model are not available for public access.
+
+bayes_rmse = function(arr, T_rm, func=mean) {
+  se = as.numeric(arr)^2 
+  mse = func(se, na.rm=TRUE)
+  rmse = sqrt(mse)
+  rmse
+}
+```
+
+
+# Residual Analysis
+```{r}
+for (mod in c("bestMod", "bestMod_REOnly")){
+  for (t in c(11, 9, 7, 5)){
+    s = 1
+    model_name = paste0("CARC_", mod, "_S", s, "_rm", t)
+    df_tmp = read.csv(paste0(result_dir, model_name, '/residuals.csv'))
+    df_tmp = c(s, sapply(df_tmp, bayes_rmse))
+    names(df_tmp) = c('subject', paste0('rmse_', 1:t))
+    for (s in 2:40){
+      model_name = paste0("CARC_", mod, "_S", s, "_rm", t)
+      new_row = read.csv(paste0(result_dir, model_name, '/residuals.csv'))
+      new_row = c(s, sapply(new_row, bayes_rmse))
+      df_tmp = rbind(df_tmp, new_row)
+    }
+    write.csv(df_tmp, paste0(result_dir, mod, "_forecast_rmse_by_subj_", t, '.csv'), row.names = FALSE)
+    print(paste0(result_dir, mod, "_forecast_rmse_by_subj_", t, '.csv'))
+  }
+}
+```
+
+```{r}
+T_rm_lst = c(11, 9, 7, 5)
+t = T_rm_lst[1]
+df_best = read.csv(paste0(result_dir, "bestMod_forecast_rmse_by_subj_", t, '.csv'))
+df_re = read.csv(paste0(result_dir, "bestMod_REOnly_forecast_rmse_by_subj_", t, '.csv'))
+df_best$steps_ahead = t
+df_re$steps_ahead = t
+for (t in T_rm_lst[2:length(T_rm_lst)]){
+  tmp_full = read.csv(paste0(result_dir, "bestMod_forecast_rmse_by_subj_", t, '.csv'))
+  tmp_re = read.csv(paste0(result_dir, "bestMod_REOnly_forecast_rmse_by_subj_", t, '.csv'))
+  tmp_full$steps_ahead = t
+  tmp_re$steps_ahead = t
+  df_best = plyr::rbind.fill(df_best, tmp_full)
+  df_re = plyr::rbind.fill(df_re, tmp_re)
+}
+
+write.csv(df_best, paste0(result_dir, "bestMod_forecast_rmse_all.csv"), row.names = FALSE)
+write.csv(df_re, paste0(result_dir, "bestMod_REOnly_forecast_rmse_all.csv"), row.names = FALSE)
+```
+
+# Randomization test (via shuffling by-subject RMSEs)
+```{r}
+df_best = read.csv(paste0(result_dir, "bestMod_forecast_rmse_all.csv"))
+df_re = read.csv(paste0(result_dir, "bestMod_REOnly_forecast_rmse_all.csv"))
+
+df_best$model="Full"
+df_re$model="RE"
+df = rbind(df_best, df_re)
+df = melt(df, id=c('subject', 'steps_ahead', 'model'), na.rm=TRUE)
+
+
+ITERS = 100000
+df_p = data.frame(
+  steps_ahead = numeric(),
+  prediction = numeric(),
+  meanRMSE_Full = numeric(),
+  meanRMSE_RE = numeric(),
+  meanRMSE_diff = numeric(),
+  p = numeric()
+)
+
+for (t in T_rm_lst) {
+  for (i in 1:t){
+    tmp = subset(df, variable==paste0('rmse_', i) & steps_ahead==t )
+    meanRMSE_Full = mean(tmp[tmp$model=='Full', 'value'], na.rm=TRUE)
+    meanRMSE_RE = mean(tmp[tmp$model=='RE', 'value'], na.rm=TRUE)
+    meanRMSE_diff = meanRMSE_Full - meanRMSE_RE
+    labels = tmp$model
+    
+    mean_diff_list = vector()
+    for (j in 1:ITERS){
+      shuffled = tmp
+      shuffled$model=sample(labels)
+      mean_full = mean(shuffled[shuffled$model=='Full', 'value'])
+      mean_re = mean(shuffled[shuffled$model=='RE', 'value'])
+      mean_diff_list = append(mean_diff_list, mean_full - mean_re)
+    }
+  
+    p = sum(mean_diff_list <= meanRMSE_diff)/ITERS
+    new_row =  data.frame(steps_ahead = t, prediction=i, 
+                          meanRMSE_Full=meanRMSE_Full, meanRMSE_RE=meanRMSE_RE,
+                          meanRMSE_diff=meanRMSE_diff, p=p)
+    df_p = rbind(df_p,new_row)
+  }
+}
+
+write.csv(df_p, paste0(result_dir, 'meanRMSE_analysis.csv'))
+```
+
+
+# Bayesian RMSE plots
+```{r}
+df_p = read.csv('model_results/meanRMSE_analysis.csv')
+
+avg_size = 18
+weeks_map = c(0, 1, 2, 3, 7, 8, 12, 13, 17, 21, 25, 29, 33, 37)+1
+pred_visits = 14-df_p$steps_ahead + df_p$prediction
+df = df_p
+df$weeks = as.numeric(lapply(pred_visits, function(x){weeks_map[x]}))
+df = melt.data.frame(df, id.vars=c('steps_ahead', 'prediction', 'weeks'), measure.vars=c('meanRMSE_Full', 'meanRMSE_RE'))
+df$steps_ahead = factor(df$steps_ahead, levels=c(11, 9, 7, 5))
+
+weeks_lab = c( 3, 8, 13, 22, 34)
+
+drect=data.frame(x1=c(2,7,12)+1, x2=c(3,8,13)+1, y1=c(0,0,0), y2=c(1.6, 1.6, 1.6), training=c('1','2','3'), r=c(1,2,3))
+p_rmse = ggplot(df, aes(x = weeks, y = value, group=steps_ahead)) +
+  geom_rect(data=drect, inherit.aes = FALSE, aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), 
+            fill='azure3', alpha=c(0.3, 0.6, 0.9),  show.legend = FALSE) +
+  geom_point(aes(color=steps_ahead, shape=variable), size=6, alpha=1) + 
+  scale_colour_viridis_d(option='mako', begin=0.3, end=0.9, direction=-1, labels=c("11"="Pre-train: 1st", "9"="Pre-train: 2nd", "7"= "Pre-train: 3rd", "5" = "Post-train: 1 mon."), name="") +
+  scale_shape(name='Model Type', labels=c("meanRMSE_Full"="Hierachical", "meanRMSE_RE"="Non-hierachical")) + 
+  geom_smooth(aes(group=interaction(variable, steps_ahead), color=steps_ahead, linetype=variable),
+              show.legend=c(linetype=FALSE), method = 'lm', formula=y~log(x), se=FALSE, size = 2, alpha=0.6) +
+  scale_linetype_manual(values=c('meanRMSE_Full'='solid', 'meanRMSE_RE'='dotted')) +
+  scale_x_continuous(breaks= weeks_lab, labels=c("3","8","13", "22", "34"), name = "Weeks") +
+  ylab("mean RMSE") +
+  scale_y_continuous(breaks = seq(0, 1.6, by = 0.5)) +
+  xlab("Target Week") +
+  theme_classic() +
+  theme(text = element_text(size = 20)) +
+  theme(legend.title = element_text(size = 18, face='italic')) +
+  theme(legend.text = element_text(size = 18)) +
+  ggtitle("  C: Bayesian RMSE") +
+  theme(plot.title = element_text(size = 20))
+
+```
+
+```{r}
+avg_size = 18
+weeks_map = c(0, 1, 2, 3, 7, 8, 12, 13, 17, 21, 25, 29, 33, 37)+1
+pred_visits = 14-df_p$steps_ahead + df_p$prediction
+df = df_p
+df$weeks = as.numeric(lapply(pred_visits, function(x){weeks_map[x]}))
+df$steps_ahead = factor(df$steps_ahead, levels=c(11, 9, 7, 5))
+
+weeks_lab = c( 3, 8, 13, 22, 34)
+
+drect=data.frame(x1=c(2,7,12)+1, x2=c(3,8,13)+1, y1=c(0,0,0), y2=c(0.7, 0.7, 0.7), training=c('1','2','3'), r=c(1,2,3))
+p_pvals = ggplot(df, aes(x = weeks, y = p, group=steps_ahead)) +
+  geom_rect(data=drect, inherit.aes = FALSE, aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), 
+            fill='azure3', alpha=c(0.3, 0.6, 0.9),   show.legend = FALSE) +
+  geom_point(aes(color=steps_ahead), size=6, alpha=1) + 
+  scale_colour_viridis_d(option='mako', begin=0.3, end=0.9, direction=-1, labels=c("11"="Pre-train: 1st", "9"="Pre-train: 2nd", "7"= "Pre-train: 3rd", "5" = "Post-train: 1 mon."), name="") +
+  geom_line(aes(color=steps_ahead), show.legend=c(linetype=FALSE), size = 2) +
+  geom_hline(yintercept = 0.05, size = 2) +
+  scale_linetype_manual(values=c('meanRMSE_Full'='solid', 'meanRMSE_RE'='dotted')) +
+  scale_x_continuous(breaks= weeks_lab, labels=c("3","8","13", "22", "34"), name = "Weeks") +
+  ylab("p-values (one-sided)") +
+  xlab("Target Week") +
+  theme_classic() +
+  theme(text = element_text(size = 20)) + 
+  ggtitle("  D: p-value for difference in Bayesian RMSE") +
+  theme(plot.title = element_text(size = 20))
+
+print(p_pvals)
+pdf('./plots/pvalues_RMSE.pdf', width=13, height=9)
+print(p_pvals)
+dev.off()
+```
+
+```{r}
+fig2_cd = ggarrange(p_rmse, NULL, p_pvals, ncol=3, widths=c(1, 0.12, 1), common.legend = T, legend='bottom')
+
+pdf("./plots/Fig2cd.pdf", width = 14.5, height = 6.5)
+print(fig2_cd) 
+dev.off()
+```
+
+
