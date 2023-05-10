@@ -1,4 +1,4 @@
-# Hierarchical Bayesian State-Space Model for Motor-Activity-Log (MAL)
+# Hierarchical Bayesian Dynamic (State-Space) Model for Motor-Activity-Log (MAL)
 
 This repository contains R and Stan code for the following paper (currently under review):
 
