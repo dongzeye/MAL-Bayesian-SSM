@@ -1,8 +1,5 @@
 # Hierarchical Bayesian Dynamic (State-Space) Model for Motor-Activity-Log (MAL)
 
-This repository contains R and Stan code for the following paper (currently under review):
+This repository contains R and Stan code for:
 
-__Long-Term Forecasting of a Motor Outcome Following Rehabilitation in Chronic Stroke 
-via a Hierarchical Bayesian Model of Motor Learning__\
-Nicolas Schweighofer, Dongze Ye, Haipeng Luo, David Z. D’Argenio, Carolee Winstein\
-medRxiv 2022.10.20.22280926; doi: https://doi.org/10.1101/2022.10.20.22280926
+Schweighofer, N., Ye, D., Luo, H. et al. Long-term forecasting of a motor outcome following rehabilitation in chronic stroke via a hierarchical bayesian dynamic model. J NeuroEngineering Rehabil 20, 83 (2023). https://doi.org/10.1186/s12984-023-01202-y
